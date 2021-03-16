@@ -1,3 +1,3 @@
-# Gaussian Process Regression for Potential Energy Surface Modeling
+#### Gaussian Process Regression for Potential Energy Surface Modeling
 
-Text
+
