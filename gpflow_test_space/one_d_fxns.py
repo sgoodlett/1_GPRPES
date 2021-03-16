@@ -3,7 +3,7 @@ import pandas as pd
 import gpflow as gpf
 import matplotlib.pyplot as plt
 import tensorflow as tf
-
+from gpflow.config import default_float
 ap = np.linspace(1.2, 5.0, num = 10)
 a = ap[:, np.newaxis]
 b = 10*((1-np.exp(-a+2))**2)
@@ -43,3 +43,7 @@ plt.plot(xx, samples[:, :, 0].numpy().T, "C0", linewidth=0.5)
 _ = plt.xlim(0.0, 7.0)
 plt.show()
 print(m.log_marginal_likelihood())
+
+m.predict_f_compiled = tf.function(m.predict_f, input_signature=[tf.TensorSpec(shape = [None, 1], dtype = tf.float64)])
+tf.saved_model.save(m, './')
+

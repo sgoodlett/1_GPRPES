@@ -6,9 +6,6 @@ import re
 import sys
 import gc
 from hyperopt import fmin, tpe, hp, STATUS_OK, STATUS_FAIL, Trials, space_eval
-
-#from GPy.models import GPRegression
-#from GPy.kern import RBF
 import tensorflow as tf
 import gpflow
 from .model import Model
@@ -47,7 +44,7 @@ class GaussianProcess(Model):
 
         if self.input_obj.keywords['gp_ard'] == 'opt': # auto relevancy determination (independant length scales for each feature)
             self.set_hyperparameter('ARD', hp.choice('ARD', [True,False]))
-         #TODO add optional space inclusions, something like: if option: self.hyperparameter_space['newoption'] = hp.choice(..)
+         # TODO add optional space inclusions, something like: if option: self.hyperparameter_space['newoption'] = hp.choice(..)
 
     def split_train_test(self, params):
         """
@@ -76,20 +73,31 @@ class GaussianProcess(Model):
             self.Xtest = self.X[self.test_indices]
             self.ytest = self.y[self.test_indices]
 
-    def build_model(self, params, nrestarts=10, maxit=1000, seed=0):
-        #TODO: Migrate fxn to GPFlow
+    def build_model(self, params, nrestarts=10, maxiter=1000, seed=0):
+        """
+        Optimizes model (with specified hyperparameters) using L-BFGS-B algorithm. Does this 'nrestarts' times and returns model with
+        greatest marginal log likelihood.
+        """
+        # TODO Give user control over 'nrestarts', 'maxiter', optimization method, and kernel hyperparameter initiation.
         print("Hyperparameters: ", params)
         self.split_train_test(params)
         np.random.seed(seed)     # make GPy deterministic for a given hyperparameter config
-        #TODO: ARD
-        kernel = gpflow.kernels.RBF() + gpflow.kernels.White()  # TODO add HP control of kernel
-        self.model = gpflow.models.GPR(data=(self.Xtr, self.ytr), kernel=kernel)
-        opt = gpflow.optimizers.Scipy()
-        
-        #gpflow.config.Config(jitter=1e-1)
-        #self.model.likelihood.variance.assign(25)
-        #self.model.kernel.lengthscales.assign(0.3)
-        opt_logs = opt.minimize(self.model.training_loss, self.model.trainable_variables, method='L-BFGS-B', options={'maxiter':1000})
+        # TODO: ARD
+        # Optimize model several times with random parameter initiation. This will hopefully bypass the issue with Cholesky Decomposition
+        models = []
+        for i in range(nrestarts):
+            model_i, opt_i = self.init_model()
+            try:
+                # Do an opt
+                logs = opt_i.minimize(model_i.training_loss, model_i.trainable_variables, options = dict(maxiter=maxiter))
+            
+            except tf.errors.InvalidArgumentError:
+                print("Optimization went wild, moving on to the next iteration. This is why we do restarts.")
+                
+            else:
+                # Wrap things up
+                models.append(model_i)
+        self.model = sorted(models, key = lambda x: x.log_marginal_likelihood())[-1]
         gpflow.utilities.print_summary(self.model)
         gc.collect(2) #fixes some memory leak issues with certain BLAS configs
 
@@ -176,15 +184,13 @@ class GaussianProcess(Model):
         self.optimal_hyperparameters  = dict(final)
         # obtain final model from best hyperparameters
         print("Fine-tuning final model architecture...")
-        self.build_model(self.optimal_hyperparameters, nrestarts=10, maxit=1000)
+        self.build_model(self.optimal_hyperparameters, nrestarts=10, maxiter=1000)
         print("Final model performance (cm-1):")
         self.test_error = self.vet_model(self.model)
         self.save_model(self.optimal_hyperparameters)
 
     def save_model(self, params):
-        #TODO: Migrate fxn to GPFlow
-        # Save model. Currently GPy requires saving training data in model for some reason. 
-        model_dict = self.model.to_dict(save_data=True)
+        # Save model.
         print("Saving ML model data...") 
         model_path = "model1_data"
         while os.path.isdir(model_path):
@@ -192,8 +198,9 @@ class GaussianProcess(Model):
             model_path = re.sub("\d+",str(new), model_path)
         os.mkdir(model_path)
         os.chdir(model_path)
-        with open('model.json', 'w') as f:
-            json.dump(model_dict, f)
+        self.model.predict_f_compiled = tf.function(self.model.predict_f, input_signature=[tf.TensorSpec(shape=None, dtype = tf.float64)])
+        tf.saved_model.save(self.model, './')
+
         with open('hyperparameters', 'w') as f:
             print(params, file=f)
         
@@ -248,8 +255,7 @@ class GaussianProcess(Model):
         return newy
 
     def write_convenience_function(self):
-        #TODO: Migrate fxn to GPFlow
-        string = "from peslearn.ml import GaussianProcess\nfrom peslearn import InputProcessor\nfrom GPy.core.model import Model\nimport numpy as np\nimport json\nfrom itertools import combinations\n\n"
+        string = "from peslearn.ml import GaussianProcess\nfrom peslearn import InputProcessor\nimport tensorflow as tf\nimport gpflow\nimport numpy as np\nimport json\nfrom itertools import combinations\n\n"
         if self.pip:
             string += "gp = GaussianProcess('PES.dat', InputProcessor(''), molecule_type='{}')\n".format(self.molecule_type)
         else:
@@ -258,11 +264,15 @@ class GaussianProcess(Model):
             hyperparameters = f.read()
         string += "params = {}\n".format(hyperparameters)
         string += "X, y, Xscaler, yscaler =  gp.preprocess(params, gp.raw_X, gp.raw_y)\n"
-        string += "model = Model('mymodel')\n"
-        string += "with open('model.json', 'r') as f:\n"
-        string += "    model_dict = json.load(f)\n"
-        string += "final = model.from_dict(model_dict)\n\n"
+        string += "model = tf.saved_model.load('./')\n"
         string += gp_convenience_function
         return string
 
+    def init_model(self):
+        # Initializes model and model parameters
+        r = np.random.rand(3)
+        kernel = gpflow.kernels.RBF(variance = (r[0]*100), lengthscales = (r[1]*10)) + gpflow.kernels.White(variance = (r[2]*0.0001))
+        model = gpflow.models.GPR(data = (self.Xtr, self.ytr), kernel = kernel)
+        opt = gpflow.optimizers.Scipy()
+        return model, opt
 

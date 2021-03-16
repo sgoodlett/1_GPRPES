@@ -1,19 +1,16 @@
 from peslearn.ml import GaussianProcess
 from peslearn import InputProcessor
-from GPy.core.model import Model
+import tensorflow as tf
+import gpflow
 import numpy as np
 import json
 from itertools import combinations
 
 gp = GaussianProcess('PES.dat', InputProcessor(''), molecule_type='A2B')
-params = {'morse_transform': {'morse': False}, 'pip': {'degree_reduction': False, 'pip': True}, 'scale_X': 'mm01', 'scale_y': 'mm01'}
+params = {'morse_transform': {'morse': False}, 'pip': {'degree_reduction': False, 'pip': True}, 'scale_X': 'mm01', 'scale_y': 'std'}
 
 X, y, Xscaler, yscaler =  gp.preprocess(params, gp.raw_X, gp.raw_y)
-model = Model('mymodel')
-with open('model.json', 'r') as f:
-    model_dict = json.load(f)
-final = model.from_dict(model_dict)
-
+model = tf.saved_model.load('./')
 
 # How to use 'compute_energy()' function
 # --------------------------------------
@@ -52,7 +49,7 @@ def pes(geom_vectors, cartesian=True):
             axis = 0
         g = np.apply_along_axis(cart1d_to_distances1d, axis, g)
     newX = gp.transform_new_X(g, params, Xscaler)
-    E, cov = final.predict(newX, full_cov=False)
+    E, cov = model.predict_f_compiled(newX)
     e = gp.inverse_transform_new_y(E,yscaler)
     #e = e - (insert min energy here)
     #e *= 219474.63  ( convert units )
